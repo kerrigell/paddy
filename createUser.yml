@@ -1,0 +1,90 @@
+---
+- hosts: jumper
+  become: True
+  become_user: root
+  vars:
+  tasks:
+    - name: create user on jumper server
+      when: ansible_host in  groups['jumper']
+      user: name={{ item }} shell=/bin/bash update_password=always  comment="{{ item }}@wanda.cn" generate_ssh_key=yes ssh_key_bits=2048 ssh_key_comment="{{ item }}@wanda.cn" ssh_key_type=rsa ssh_key_passphrase=""
+      with_items: "{{ apply_users }}"
+
+    - name: create ssh key directory
+      file:
+        path: '/home/{{ item }}/.ssh/'
+        state: directory
+        owner: '{{ item }}'
+        group: '{{ item }}'
+        mode: 0700
+      with_items: "{{ apply_users }}"
+
+    - name: backup ssh private key
+      fetch:
+        src: /home/{{ item }}/.ssh/id_rsa
+        dest: ssh_keys/{{ item }}-id_rsa
+        flat: yes
+      with_items: "{{ apply_users }}"
+
+    - name: backup ssh public key
+      fetch:
+        src: /home/{{ item }}/.ssh/id_rsa.pub
+        dest: ssh_keys/{{ item }}-id_rsa.pub
+        flat: yes
+      with_items: "{{ apply_users }}"
+
+    - name: change user password
+      shell: echo "{{ item }}:$( openssl rand -base64 12 | sed 's/[\+\-\/\*\\=]//g')" | tee  ssh_keys/{{ item }}-pwd.txt | chpasswd
+      with_items: "{{ apply_users }}"
+
+
+- hosts: ops
+  become: True
+  become_user: root
+  vars:
+  tasks:
+    - name: create user on ops server
+      when: ansible_host not in  groups['jumper']
+      user: name={{ item }} shell=/bin/bash update_password=always
+      with_items: "{{ apply_users }}"
+
+    - name: create ssh key directory
+      file:
+        path: '/home/{{ item }}/.ssh/'
+        state: directory
+        owner: '{{ item }}'
+        group: '{{ item }}'
+        mode: 0700
+      with_items: "{{ apply_users }}"
+
+    - name: push ssh public key
+      copy:
+        src: ssh_keys/{{ item }}-id_rsa.pub
+        dest: /home/{{ item }}/.ssh/authorized_keys
+        owner: '{{ item }}'
+        group: '{{ item }}'
+        mode: 0600
+      with_items: "{{ apply_users }}"
+
+- hosts: ops,jumper
+  become: True
+  become_user: root
+  tasks:
+    - name: grant sudo private
+      lineinfile:
+        dest: /etc/sudoers
+        state:  present
+        line: '{{ item[0]}} {{ item[1] }}'
+        validate: 'visudo -cf %s'
+      with_nested:
+        - "{{ apply_users }}"
+        - [ ' ALL=(ALL) NOPASSWD: ALL' , ]
+
+    - name: grant sudo requiretty
+      lineinfile:
+        dest: /etc/sudoers
+        state:  present
+        line: 'Defaults: {{ item }} !requiretty'
+        validate: 'visudo -cf %s'
+      with_items:
+        - "{{ apply_users }}"
+
